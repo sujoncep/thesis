@@ -110,10 +110,10 @@ save_dir = r'G:\THESIS\CODE\SaliencyMix-main\SaliencyMix-main\SaliencyMix-ImageN
 
 # Create data loaders
 foreground_loader = DataLoader(
-    foreground_dataset, batch_size=1, shuffle=True
+    foreground_dataset, batch_size=4, shuffle=True
 )
 background_loader = DataLoader(
-    background_dataset, batch_size=1, shuffle=True
+    background_dataset, batch_size=4, shuffle=True
 )
 val_loader = DataLoader(dataset=val_dataset, batch_size=1, shuffle=False)
 
@@ -167,76 +167,86 @@ def save_images(tensor_to_save):
 
 
 for epoch in range(num_epochs):
+    print("Training epoch ", epoch)
+    iteration = 0
+
     for foreground_images, foreground_labels in foreground_loader:
+        iteration += 1
+        print("\tIteration ", iteration)
+        # TORCH_USE_CUDA_DSA error solution
+        with torch.autograd.detect_anomaly():
 
-        # Get a batch of background images
-        background_images = next(iter(background_loader))
+            # Change background 40% of the time
+            # for i in range(len(foreground_images)):
+            if random.random() < 0.5:
+                # Your training loop here
+                # Get a batch of background images
+                background_images = next(iter(background_loader))
 
-        d1, d2, d3, d4, d5, d6, d7, d8 = basnet(foreground_images.to(device))
+                d1, d2, d3, d4, d5, d6, d7, d8 = basnet(
+                    foreground_images.to(device))
 
-        # normalization
-        pred = d1[:, 0, :, :]
-        masks = normPRED(pred)
-        del d1, d2, d3, d4, d5, d6, d7, d8
-        masks = masks.detach().cpu()
-        result = foreground_images * masks + background_images * (1 - masks)
-        print(result.shape)
+                # normalization
+                pred = d1[:, 0, :, :]
+                masks = normPRED(pred)
+                # print(masks.shape)
+                masks = torch.unsqueeze(masks, 1)
+                # print(masks.shape)
+                del d1, d2, d3, d4, d5, d6, d7, d8
+                masks = masks.detach().cpu()
+                result = foreground_images * masks + \
+                    background_images * (1 - masks)
+                # print(result.shape)
 
-        # synthesize image saving in particular directory
-        # for i in range(0, len(result), batch_size):
-        #     batch_tensor = result[i:i+batch_size]
-        #     save_images(batch_tensor)
+                # synthesize image saving in particular directory
+                # for i in range(0, len(result), batch_size):
+                #     batch_tensor = result[i:i+batch_size]
+                #     save_images(batch_tensor)
 
-    # TORCH_USE_CUDA_DSA error solution
-    with torch.autograd.detect_anomaly():
-        # Your training loop here
+                # Perform classification using ResNet-50
+                outputs = resnet_model(result.to(device))
+                loss = criterion(outputs, foreground_labels.to(device))
 
-        # Change background 40% of the time
-        # for i in range(len(foreground_images)):
-        if random.random() < 0.5:
+                # Backward pass and optimization
+                optimizer.zero_grad()
+                loss.backward()
+                optimizer.step()
+
+            else:
+                # Perform classification using ResNet-50 without combination
+                outputs = resnet_model(foreground_images.to(device))
+                loss = criterion(outputs, foreground_labels.to(device))
+
+                # Backward pass and optimization
+                optimizer.zero_grad()
+                loss.backward()
+                optimizer.step()
+
+    resnet_model.eval()  # Set model to evaluation mode
+    correct = 0
+    total = 0
+
+    with torch.no_grad():  # Disable gradient calculation
+        for foreground_images, foreground_labels in val_loader:  # Load validation images
+
+            # Get masks using BASNet
+            d1, d2, d3, d4, d5, d6, d7, d8 = basnet(
+                foreground_images.to(device))
+            pred = d1[:, 0, :, :]
+            masks = normPRED(pred)
+            del d1, d2, d3, d4, d5, d6, d7, d8
+            masks = masks.detach().cpu()
+
+            # Combine foreground and background with masks
+            combined_images = foreground_images * \
+                masks + background_images * (1 - masks)
+
             # Perform classification using ResNet-50
-            outputs = resnet_model(result.to(device))
-            loss = criterion(outputs, foreground_labels.to(device))
+            outputs = resnet_model(combined_images.to(device))
+            _, predicted = torch.max(outputs.data, 1)
+            total += foreground_labels.size(0)
+            correct += (predicted == foreground_labels.to(device)).sum().item()
 
-            # Backward pass and optimization
-            optimizer.zero_grad()
-            loss.backward()
-            optimizer.step()
-
-        else:
-            # Perform classification using ResNet-50 without combination
-            outputs = resnet_model(foreground_images.to(device))
-            loss = criterion(outputs, foreground_labels.to(device))
-
-            # Backward pass and optimization
-            optimizer.zero_grad()
-            loss.backward()
-            optimizer.step()
-
-resnet_model.eval()  # Set model to evaluation mode
-correct = 0
-total = 0
-
-with torch.no_grad():  # Disable gradient calculation
-    for foreground_images, foreground_labels in val_loader:  # Load validation images
-
-        # Get masks using BASNet
-        d1, d2, d3, d4, d5, d6, d7, d8 = basnet(foreground_images.to(device))
-        pred = d1[:, 0, :, :]
-        masks = normPRED(pred)
-        del d1, d2, d3, d4, d5, d6, d7, d8
-        masks = masks.detach().cpu()
-
-        # Combine foreground and background with masks
-        combined_images = foreground_images * \
-            masks + background_images * (1 - masks)
-
-        # Perform classification using ResNet-50
-        outputs = resnet_model(combined_images.to(device))
-        _, predicted = torch.max(outputs.data, 1)
-        total += foreground_labels.size(0)
-        correct += (predicted == foreground_labels.to(device)).sum().item()
-
-accuracy = correct / total
-print(f"Validation Accuracy: {accuracy:.4f}")
-torch.save(resnet_model.state_dict(), 'resnet_model.pth')
+    accuracy = correct / total
+    print(f"Validation Accuracy: {accuracy:.4f}")
+    torch.save(resnet_model.state_dict(), 'resnet_model.pth')
